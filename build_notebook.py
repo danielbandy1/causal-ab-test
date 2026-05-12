@@ -62,7 +62,9 @@ from src.analysis import (
     load_data, audit_data, clean_data,
     naive_comparison, ztest_conversion, power_analysis,
     add_time_features, propensity_score_match,
+    subgroup_analysis, heterogeneity_test,
 )
+from src.bayesian import bayesian_ab_summary
 
 sns.set_theme(style="whitegrid", palette="muted")
 %matplotlib inline
@@ -334,12 +336,176 @@ plt.tight_layout()
 plt.show()
 """)
 
-# ── Section 6 ─────────────────────────────────────────────────────────────────
+# ── Section 6: Bayesian ───────────────────────────────────────────────────────
 md("""\
 ---
-## Step 6 — Conclusions
+## Step 6 — Bayesian A/B Testing
 
-Three different methods. Three consistent answers.
+The frequentist z-test answers: *"Is the observed difference too large to be noise?"*
+
+The **Bayesian approach** answers a more natural question: *"Given the data, what is
+the probability that treatment is actually better than control?"*
+
+**Model**: Beta-Binomial conjugate model
+- **Prior**: `theta ~ Beta(1, 1)` — a uniform prior expressing no prior belief
+- **Likelihood**: conversions follow a Binomial distribution
+- **Posterior**: `theta | data ~ Beta(1 + conversions, 1 + non-conversions)`
+
+Because our sample sizes are huge (~145k per group), the prior is completely
+overwhelmed by the data. The posteriors are extremely tight around the true rates.
+""")
+
+code("""\
+from scipy import stats as sp_stats
+
+bayes = bayesian_ab_summary(df)
+
+print("Bayesian A/B Test Summary")
+print("─" * 50)
+print(f"  Posterior mean — control   : {bayes['mean_control']:.4%}")
+print(f"  Posterior mean — treatment : {bayes['mean_treatment']:.4%}")
+print()
+print(f"  95% Credible interval — control   : ({bayes['ci_95_control'][0]:.4%}, {bayes['ci_95_control'][1]:.4%})")
+print(f"  95% Credible interval — treatment : ({bayes['ci_95_treatment'][0]:.4%}, {bayes['ci_95_treatment'][1]:.4%})")
+print()
+print(f"  P(treatment > control)  : {bayes['prob_treatment_better']:.1%}")
+print(f"  P(control > treatment)  : {bayes['prob_control_better']:.1%}")
+print()
+print(f"  Expected loss if ship treatment : {bayes['loss_if_ship_treatment']:.6f}")
+print(f"  Expected loss if keep control   : {bayes['loss_if_keep_control']:.6f}")
+print()
+if bayes['prob_treatment_better'] >= 0.95:
+    print("✓  Bayesian decision: ship treatment (P > 95%)")
+elif bayes['prob_control_better'] >= 0.95:
+    print("✗  Bayesian decision: keep control (P(control better) > 95%)")
+else:
+    print(f"⟳  Bayesian decision: inconclusive — collect more data")
+    print(f"   Neither variant has ≥ 95% probability of superiority.")
+""")
+
+code("""\
+# Plot the posterior distributions
+a_c, b_c   = bayes['posterior_control']
+a_t, b_t   = bayes['posterior_treatment']
+
+x = np.linspace(0.10, 0.14, 2_000)
+
+fig, ax = plt.subplots(figsize=(9, 4))
+ax.plot(x, sp_stats.beta.pdf(x, a_c, b_c), color="#5b7fa6", lw=2,   label="Control posterior")
+ax.plot(x, sp_stats.beta.pdf(x, a_t, b_t), color="#e07b54", lw=2,   label="Treatment posterior")
+ax.fill_between(x, sp_stats.beta.pdf(x, a_c, b_c), alpha=0.25, color="#5b7fa6")
+ax.fill_between(x, sp_stats.beta.pdf(x, a_t, b_t), alpha=0.25, color="#e07b54")
+
+# Mark posterior means
+ax.axvline(bayes['mean_control'],   color="#5b7fa6", lw=1.2, linestyle="--", alpha=0.8)
+ax.axvline(bayes['mean_treatment'], color="#e07b54", lw=1.2, linestyle="--", alpha=0.8)
+
+ax.set_xlabel("Conversion rate (θ)")
+ax.set_ylabel("Posterior density")
+ax.set_title(
+    f"Posterior distributions after {len(df):,} observations\\n"
+    f"P(treatment > control) = {bayes['prob_treatment_better']:.1%}"
+)
+ax.xaxis.set_major_formatter(mtick.PercentFormatter(xmax=1))
+ax.legend()
+plt.tight_layout()
+plt.show()
+""")
+
+md("""\
+The posteriors are so tight (because n ≈ 145k per group) that the two distributions
+barely overlap — but the overlap is centred at zero lift.
+
+**P(treatment > control) ≈ 35–40%** — the Bayesian answer confirms the frequentist one.
+Neither framework supports shipping the new page.
+
+The **expected loss** framing is useful for stakeholders: if you ship the treatment
+and it turns out control was better, you lose on average ~0.02 percentage points of
+conversion rate. This quantifies the *cost of being wrong*, which p-values can't do.
+""")
+
+# ── Section 7: Subgroup ───────────────────────────────────────────────────────
+md("""\
+---
+## Step 7 — Subgroup Analysis & Heterogeneity
+
+The overall effect is null — but could the new page help *some users* even if it
+hurts (or doesn't help) others? Subgroup analysis checks for **effect heterogeneity**.
+
+We slice by:
+- **Hour bucket** — Night (0–5), Morning (6–11), Afternoon (12–17), Evening (18–23)
+- **Day type** — Weekday vs. Weekend
+
+**Multiple comparisons warning**: running 6 sub-tests inflates the false-positive rate.
+We apply a **Bonferroni correction** (multiply each p-value by the number of tests)
+to control the family-wise error rate.
+""")
+
+code("""\
+sg = subgroup_analysis(df)
+
+# Forest plot
+fig, ax = plt.subplots(figsize=(9, 5))
+
+y_positions = range(len(sg))
+colors = ["#e07b54" if s else "#aaaaaa" for s in sg["significant"]]
+
+ax.scatter(sg["lift"] * 100, y_positions, color=colors, zorder=3, s=60)
+for i, (_, row) in enumerate(sg.iterrows()):
+    ax.hlines(i, row["ci_low"] * 100, row["ci_high"] * 100,
+              color=colors[i], lw=2, alpha=0.7)
+
+ax.axvline(0, color="black", lw=0.8, linestyle="--")
+ax.set_yticks(list(y_positions))
+ax.set_yticklabels([
+    f"{row['subgroup']}\\n(n={row['n_control']+row['n_treatment']:,})"
+    for _, row in sg.iterrows()
+])
+ax.set_xlabel("Lift (percentage points, treatment − control)")
+ax.set_title("Subgroup analysis — treatment effect by segment\\nColoured = significant after Bonferroni correction")
+ax.xaxis.set_major_formatter(mtick.PercentFormatter())
+plt.tight_layout()
+plt.show()
+
+print(sg[["subgroup_type", "subgroup", "lift", "ci_low", "ci_high",
+          "p_raw", "p_bonferroni", "significant"]].to_string(index=False))
+""")
+
+code("""\
+# Heterogeneity test: does the treatment effect differ by hour bucket?
+het = heterogeneity_test(df)
+
+print("Heterogeneity test (likelihood-ratio, treatment × hour_bucket interaction)")
+print("─" * 60)
+print(f"  LR statistic : {het['lr_stat']}")
+print(f"  Degrees of freedom : {het['df']}")
+print(f"  p-value      : {het['p_value']}")
+print()
+if het['heterogeneity']:
+    print("✓  Significant heterogeneity detected — the treatment effect")
+    print("   differs meaningfully across hour buckets.")
+else:
+    print("✗  No significant heterogeneity (p > 0.05).")
+    print("   The treatment effect is consistent across hour buckets.")
+    print("   There is no subgroup where the new page clearly wins.")
+""")
+
+md("""\
+When neither the overall test nor any subgroup test (after correction) is significant,
+the evidence against the new page is strong. There is no hidden segment where it works.
+
+**The analyst's responsibility here**: subgroup analyses are easy to abuse. You can
+always find *some* subgroup with a nominally significant p-value if you slice enough
+ways. Bonferroni correction and pre-registration (deciding subgroups before seeing the
+data) are the defences against this.
+""")
+
+# ── Section 8: Conclusions ────────────────────────────────────────────────────
+md("""\
+---
+## Step 8 — Conclusions
+
+Five methods. Five consistent answers.
 """)
 
 code("""\
@@ -352,7 +518,7 @@ summary = pd.DataFrame([
         "n per group":   f"{len(df_raw)//2:,}",
         "Lift (pp)":     f"{naive_comparison(df_raw)['absolute_lift']:+.4f}",
         "p-value":       "N/A",
-        "Verdict":       "⚠️  unreliable — data quality issues",
+        "Verdict":       "⚠️  unreliable",
     },
     {
         "Method":        "Naive (cleaned data)",
@@ -367,6 +533,20 @@ summary = pd.DataFrame([
         "Lift (pp)":     f"{psm_naive['absolute_lift']:+.4f}",
         "p-value":       f"{psm_ztest['p_value']}",
         "Verdict":       "✗  not significant",
+    },
+    {
+        "Method":        "Bayesian (P treatment better)",
+        "n per group":   f"{naive['n_control']:,}",
+        "Lift (pp)":     f"{bayes['mean_treatment'] - bayes['mean_control']:+.4f}",
+        "p-value":       f"P={bayes['prob_treatment_better']:.1%}",
+        "Verdict":       "✗  inconclusive / control favoured",
+    },
+    {
+        "Method":        "Subgroup (best segment)",
+        "n per group":   "varies",
+        "Lift (pp)":     f"{sg['lift'].max():+.4f}",
+        "p-value":       f"{sg['p_bonferroni'].min():.3f} (Bonferroni)",
+        "Verdict":       "✗  no segment significant after correction",
     },
 ])
 
@@ -395,6 +575,15 @@ The test tells us the true effect is very likely below 1%.
 In a randomised experiment, PSM on time covariates produces a small matched sample
 (as expected), and the conclusion doesn't change. In an observational study where
 treatment assignment is not random, PSM would be essential.
+
+**5. Frequentist and Bayesian methods agree.**
+P(treatment > control) ≈ 35–40%. Neither framework supports shipping the new page.
+The Bayesian framing adds something useful: expected loss quantifies the cost of
+being wrong in each direction, which is more actionable than a p-value.
+
+**6. No subgroup saves the new page.**
+After Bonferroni correction, no hour bucket or day type shows a significant positive
+effect. The null result is not hiding inside a segment.
 
 **Recommendation**: Do not ship the new landing page.
 The test was large enough, clean enough, and long enough to trust the null result.

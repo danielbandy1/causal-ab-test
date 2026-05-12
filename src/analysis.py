@@ -199,3 +199,94 @@ def propensity_score_match(df: pd.DataFrame, caliper: float | None = None) -> pd
     ]).reset_index(drop=True)
 
     return matched_df
+
+
+# ── Subgroup / heterogeneity analysis ─────────────────────────────────────────
+
+def subgroup_analysis(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute lift, CI, and significance for each time-based subgroup.
+
+    Subgroups:
+      hour_bucket  — Night (0–5), Morning (6–11), Afternoon (12–17), Evening (18–23)
+      day_type     — Weekday (Mon–Fri) vs. Weekend (Sat–Sun)
+
+    Returns a DataFrame with one row per subgroup. P-values are Bonferroni-
+    corrected for the number of tests performed.
+    """
+    df = add_time_features(df.copy())
+
+    df["hour_bucket"] = pd.cut(
+        df["hour"],
+        bins=[-1, 5, 11, 17, 23],
+        labels=["Night (0–5)", "Morning (6–11)", "Afternoon (12–17)", "Evening (18–23)"],
+    )
+    df["day_type"] = df["day_of_week"].apply(
+        lambda d: "Weekend" if d >= 5 else "Weekday"
+    )
+
+    rows = []
+    for col in ("hour_bucket", "day_type"):
+        for val in sorted(df[col].dropna().unique(), key=str):
+            subset = df[df[col] == val]
+            ctrl  = subset[subset["group"] == "control"]["converted"]
+            treat = subset[subset["group"] == "treatment"]["converted"]
+
+            if len(ctrl) < 50 or len(treat) < 50:
+                continue
+
+            count = np.array([treat.sum(), ctrl.sum()])
+            nobs  = np.array([len(treat), len(ctrl)])
+            _, p_raw = proportions_ztest(count, nobs)
+            ci_lo, ci_hi = proportion_confint_diff(treat, ctrl)
+
+            rows.append({
+                "subgroup_type":  col,
+                "subgroup":       str(val),
+                "n_control":      len(ctrl),
+                "n_treatment":    len(treat),
+                "control_rate":   round(ctrl.mean(),  4),
+                "treatment_rate": round(treat.mean(), 4),
+                "lift":           round(treat.mean() - ctrl.mean(), 4),
+                "ci_low":         round(ci_lo, 4),
+                "ci_high":        round(ci_hi, 4),
+                "p_raw":          round(float(p_raw), 4),
+            })
+
+    result = pd.DataFrame(rows)
+    n_tests = len(result)
+    result["p_bonferroni"] = (result["p_raw"] * n_tests).clip(upper=1.0).round(4)
+    result["significant"]  = result["p_bonferroni"] < 0.05
+    return result
+
+
+def heterogeneity_test(df: pd.DataFrame) -> dict:
+    """
+    Logistic regression interaction test: does the treatment effect differ
+    by hour bucket? Returns the likelihood-ratio test p-value comparing
+    a model with interaction terms to one without.
+    """
+    import statsmodels.formula.api as smf
+
+    df = add_time_features(df.copy())
+    df["hour_bucket"] = pd.cut(
+        df["hour"],
+        bins=[-1, 5, 11, 17, 23],
+        labels=["Night", "Morning", "Afternoon", "Evening"],
+    )
+    df["treatment"] = (df["group"] == "treatment").astype(int)
+
+    base        = smf.logit("converted ~ treatment + C(hour_bucket)", data=df).fit(disp=False)
+    interaction = smf.logit("converted ~ treatment * C(hour_bucket)", data=df).fit(disp=False)
+
+    from scipy.stats import chi2
+    lr_stat = 2 * (interaction.llf - base.llf)
+    df_diff = interaction.df_model - base.df_model
+    p_value = float(chi2.sf(lr_stat, df_diff))
+
+    return {
+        "lr_stat":          round(lr_stat, 4),
+        "df":               int(df_diff),
+        "p_value":          round(p_value, 4),
+        "heterogeneity":    p_value < 0.05,
+    }
