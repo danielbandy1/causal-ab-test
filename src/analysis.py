@@ -23,11 +23,9 @@ def audit_data(df: pd.DataFrame) -> dict:
     n_dupes = df["user_id"].duplicated().sum()
 
     # Mismatches: treatment group shown old page, or control shown new page
+    # Always use the `group` column values (control/treatment) rather
+    # than attempting to detect a separate `control` column.
     mismatch_mask = (
-        ((df["group"] == "treatment") & (df["landing_page"] == "old_page")) |
-        ((df["control"] == "control") & (df["landing_page"] == "new_page"))
-        if "control" in df.columns
-        else
         ((df["group"] == "treatment") & (df["landing_page"] == "old_page")) |
         ((df["group"] == "control") & (df["landing_page"] == "new_page"))
     )
@@ -59,11 +57,16 @@ def naive_comparison(df: pd.DataFrame) -> dict:
     """Simple conversion rate comparison — the wrong way to analyse an A/B test."""
     ctrl = df[df["group"] == "control"]["converted"]
     treat = df[df["group"] == "treatment"]["converted"]
+    ctrl_mean = ctrl.mean()
+    rel_lift = None
+    if ctrl_mean != 0:
+        rel_lift = round((treat.mean() - ctrl_mean) / ctrl_mean, 4)
+
     return {
-        "control_rate":   round(ctrl.mean(), 4),
+        "control_rate":   round(ctrl_mean, 4),
         "treatment_rate": round(treat.mean(), 4),
-        "absolute_lift":  round(treat.mean() - ctrl.mean(), 4),
-        "relative_lift":  round((treat.mean() - ctrl.mean()) / ctrl.mean(), 4),
+        "absolute_lift":  round(treat.mean() - ctrl_mean, 4),
+        "relative_lift":  rel_lift,
         "n_control":      len(ctrl),
         "n_treatment":    len(treat),
     }
@@ -94,6 +97,10 @@ def proportion_confint_diff(treat: pd.Series, ctrl: pd.Series, alpha: float = 0.
     """95% CI on the difference in proportions (treatment - control)."""
     p1, p2 = treat.mean(), ctrl.mean()
     n1, n2 = len(treat), len(ctrl)
+    # Guard against empty groups which would cause division by zero.
+    if n1 == 0 or n2 == 0:
+        return (np.nan, np.nan)
+
     se = np.sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2)
     z = stats.norm.ppf(1 - alpha / 2)
     diff = p1 - p2
