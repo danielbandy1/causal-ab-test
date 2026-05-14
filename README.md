@@ -24,6 +24,47 @@ can mislead.
 
 ---
 
+## Pre-Analysis Plan
+
+Good experimental practice requires specifying hypotheses and sample sizes **before** seeing the data. This section documents what would have been written at experiment kick-off.
+
+**Hypothesis**
+- H₀: p_control = p_treatment (no difference in conversion rate)
+- H₁: p_treatment ≠ p_control (two-sided test)
+- Primary metric: 7-day conversion rate
+
+**Minimum Detectable Effect (MDE)**
+A 1% **relative** lift from a 11.95% baseline is commercially meaningful (≈ +0.12pp absolute). Smaller effects would not justify the cost and risk of a full redesign rollout.
+
+**Required Sample Size** (computed via standard two-proportion z-test formula):
+
+| Parameter | Value |
+|-----------|-------|
+| Baseline conversion | 11.95% |
+| MDE (relative) | 1% lift → 12.07% |
+| Significance level α | 0.05 (two-sided) |
+| Statistical power | 80% |
+| Required n per group | ~1,160,000 |
+
+With ~145,000 users per group, the experiment was powered to detect a **≥ 2.8% relative lift** (≈ 0.33pp absolute). Any effect smaller than this cannot be reliably distinguished from noise at this sample size.
+
+```python
+from scipy.stats import norm
+import numpy as np
+
+p0, mde_rel, alpha, power = 0.1195, 0.028, 0.05, 0.80
+p1 = p0 * (1 + mde_rel)
+z_a, z_b = norm.ppf(1 - alpha / 2), norm.ppf(power)
+p_bar = (p0 + p1) / 2
+n = (z_a * np.sqrt(2 * p_bar * (1 - p_bar))
+     + z_b * np.sqrt(p0*(1-p0) + p1*(1-p1)))**2 / (p1 - p0)**2
+# n ≈ 145,000 per group for 2.8% relative MDE ✓
+```
+
+**Stopping rule**: Minimum 145k users per group before reading results. No early stopping. Results evaluated once.
+
+---
+
 ## Key Findings
 
 1. **Data quality trap**: 1.3% of users were assigned to the wrong page — a real data
@@ -47,6 +88,42 @@ can mislead.
 
 **Recommendation**: Do not ship the new page. Run a new experiment with a different
 design hypothesis.
+
+---
+
+## Business Recommendation
+
+This section translates the statistical findings into a concrete product decision.
+
+**Decision: Do not ship the redesign.**
+
+The evidence is strong and consistent across five methods:
+
+| Evidence | Interpretation |
+|----------|---------------|
+| p = 0.558 (z-test) | Null result is not a "almost significant" miss — it is a clear zero |
+| 95% CI: (−0.31pp, +0.17pp) | Even the upper bound is a commercially negligible gain |
+| P(treatment > control) ≈ 38% | Bayesian analysis agrees: the control is *more likely* to be better |
+| Expected loss | Shipping treatment costs ~0.007pp more in expected conversions than keeping control |
+| No subgroup saves it | All 8 Bonferroni-corrected subgroups are null |
+
+**Why this result is trustworthy (not underpowered)**
+
+The experiment was sized to detect a 2.8% relative lift with 80% power. The observed effect was +0.07pp (~0.6% relative) — effectively noise. A larger experiment would not change the conclusion; it would produce a tighter confidence interval around zero.
+
+**Root cause hypothesis**
+
+The null result likely reflects one of:
+1. The redesign changes are cosmetic rather than addressing a real friction point
+2. The landing page is not the primary conversion bottleneck (investigate post-click behaviour)
+3. The treatment reduces friction for some users but adds confusion for others, producing net-zero effect
+
+**Recommended next steps**
+
+1. **Investigate the funnel**: Where do users drop off after the landing page? A/B testing the landing page only makes sense if it is the primary drop-off point.
+2. **Qualitative research**: Run 5-session user tests on the new design to identify unexpected friction before committing engineering resources to another A/B test.
+3. **Define a stronger hypothesis**: "Users will convert more because ___" — with a specific, testable mechanism. Avoid redesigning for aesthetic reasons alone.
+4. **Consider a multivariate test** if multiple page elements are candidate improvements, rather than testing full redesigns end-to-end.
 
 ---
 
