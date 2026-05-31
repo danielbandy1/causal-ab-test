@@ -9,3 +9,5 @@ jupyter>=1.0
 ipykernel>=6.0
 pytest
 pytest-cov
+streamlit>=1.35
+plotly>=5.20
