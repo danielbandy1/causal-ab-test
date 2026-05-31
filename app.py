@@ -23,6 +23,7 @@ from analysis import (
     naive_comparison, ztest_conversion,
     power_analysis, propensity_score_match,
     subgroup_analysis, heterogeneity_test,
+    cuped_adjustment,
 )
 from bayesian import bayesian_ab_summary, credible_interval
 
@@ -87,6 +88,10 @@ def get_subgroups(clean):
     htest = heterogeneity_test(clean)
     return subs, htest
 
+@st.cache_data
+def get_cuped(clean):
+    return cuped_adjustment(clean)
+
 raw, info, clean = get_data()
 
 # ── Sidebar controls ───────────────────────────────────────────────────────────
@@ -117,6 +122,7 @@ naive, ztest, power = get_freq(clean)
 bayes = get_bayes(clean, alpha_prior, beta_prior)
 matched, naive_m, ztest_m = get_psm(clean, caliper)
 subs, htest = get_subgroups(clean)
+cuped = get_cuped(clean)
 
 # ── Header ─────────────────────────────────────────────────────────────────────
 
@@ -166,11 +172,12 @@ st.divider()
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
 
-tab_freq, tab_bayes, tab_psm, tab_subgroup, tab_quality = st.tabs([
+tab_freq, tab_bayes, tab_psm, tab_subgroup, tab_cuped, tab_quality = st.tabs([
     "📊 Frequentist Test",
     "🎲 Bayesian Analysis",
     "🎯 Propensity Score Matching",
     "🔍 Subgroup Analysis",
+    "⚡ CUPED",
     "🗂 Data Quality",
 ])
 
@@ -485,7 +492,122 @@ with tab_subgroup:
         else:
             st.success("No significant heterogeneity — the null result is uniform across subgroups.")
 
-# ─── TAB 5: Data Quality ──────────────────────────────────────────────────────
+# ─── TAB 5: CUPED ─────────────────────────────────────────────────────────────
+
+with tab_cuped:
+    st.subheader("CUPED — Variance Reduction via Covariate Adjustment")
+    st.markdown(
+        "**CUPED** (Controlled-experiment Using Pre-Experiment Data) reduces estimator variance "
+        "by regressing out a known covariate *X* that is correlated with the outcome *Y* "
+        "but independent of the treatment assignment.\n\n"
+        "$$\\hat{Y}_{\\text{cuped},i} = Y_i - \\theta\\,(X_i - \\bar{X}), "
+        "\\quad \\theta = \\frac{\\operatorname{Cov}(Y_{\\text{ctrl}},\\, X_{\\text{ctrl}})}"
+        "{\\operatorname{Var}(X_{\\text{ctrl}})}$$\n\n"
+        "> **Note:** This dataset has no true pre-experiment covariate. We use *hour of day* "
+        "as a proxy (corr ≈ 0.003 in control) to demonstrate the technique. "
+        "In production, you'd use a pre-period metric such as prior-week CVR."
+    )
+
+    st.divider()
+
+    col_l, col_r = st.columns([1, 1], gap="large")
+
+    with col_l:
+        st.subheader("Variance reduction")
+
+        vc1, vc2, vc3 = st.columns(3)
+        vc1.metric("θ (adjustment coeff.)", f"{cuped['theta']:.6f}")
+        vc2.metric("X̄ (mean covariate)",    f"{cuped['x_bar']:.2f} hr")
+        vc3.metric("Var reduction",           f"{cuped['var_reduction_pct']:+.3f}%",
+                   help="(1 − Var(Y_cuped) / Var(Y)) × 100 in the control group")
+
+        st.divider()
+
+        se1, se2 = st.columns(2)
+        se1.metric("SE (original)",    f"{cuped['se_orig']:.6f}")
+        se2.metric("SE (CUPED)",       f"{cuped['se_adj']:.6f}",
+                   delta=f"{cuped['se_reduction_pct']:+.3f}%",
+                   delta_color="normal")
+
+        st.caption(
+            "SE = pooled standard error of the lift estimate. "
+            "With a near-zero θ the SE change is negligible — "
+            "as expected when the covariate adds no information."
+        )
+
+        st.divider()
+
+        categories = ["Original", "CUPED adjusted"]
+        se_vals    = [cuped["se_orig"], cuped["se_adj"]]
+        var_vals   = [cuped["var_orig"], cuped["var_adj"]]
+
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(
+            name="Variance (ctrl)",
+            x=categories,
+            y=var_vals,
+            marker_color=["#94a3b8", "#3b82f6"],
+            opacity=0.85,
+            text=[f"{v:.6f}" for v in var_vals],
+            textposition="outside",
+        ))
+        fig_bar.update_layout(
+            height=260,
+            yaxis=dict(title="Variance of outcome"),
+            margin=dict(t=20, b=20),
+            showlegend=False,
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    with col_r:
+        st.subheader("Adjusted lift comparison")
+
+        tc1, tc2 = st.columns(2)
+        tc1.metric("Lift (original)",       f"{cuped['lift_orig']:+.4%}")
+        tc2.metric("Lift (CUPED)",           f"{cuped['lift_adj']:+.4%}")
+        tc1.metric("t-statistic",            f"{cuped['t_stat']:.4f}")
+        tc2.metric("p-value (CUPED t-test)", f"{cuped['p_value']:.4f}",
+                   delta="significant" if cuped["significant"] else "not significant",
+                   delta_color="normal" if cuped["significant"] else "inverse")
+
+        st.divider()
+
+        compare_rows = {
+            "Metric":            ["Control mean", "Treatment mean", "Absolute lift", "SE of lift", "p-value"],
+            "Original":          [
+                f"{cuped['mean_ctrl_orig']:.4%}",
+                f"{cuped['mean_treat_orig']:.4%}",
+                f"{cuped['lift_orig']:+.4%}",
+                f"{cuped['se_orig']:.6f}",
+                f"{ztest['p_value']:.4f}",
+            ],
+            "CUPED adjusted":    [
+                f"{cuped['mean_ctrl_adj']:.4%}",
+                f"{cuped['mean_treat_adj']:.4%}",
+                f"{cuped['lift_adj']:+.4%}",
+                f"{cuped['se_adj']:.6f}",
+                f"{cuped['p_value']:.4f}",
+            ],
+        }
+        st.dataframe(pd.DataFrame(compare_rows), use_container_width=True, hide_index=True)
+
+        if abs(cuped["var_reduction_pct"]) < 0.5:
+            st.info(
+                "Variance reduction is near zero — the covariate (hour of day) is essentially "
+                "uncorrelated with conversion in this dataset. "
+                "CUPED shows its power when pre-experiment correlation is ≥ 30–40%."
+            )
+        elif cuped["var_reduction_pct"] > 0:
+            st.success(
+                f"CUPED reduced control variance by {cuped['var_reduction_pct']:.1f}%, "
+                f"narrowing confidence intervals and improving sensitivity."
+            )
+        else:
+            st.warning("Variance slightly increased — covariate is negatively correlated with outcome.")
+
+
+# ─── TAB 6: Data Quality ──────────────────────────────────────────────────────
 
 with tab_quality:
     st.subheader("Raw data audit")

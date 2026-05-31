@@ -267,6 +267,63 @@ def subgroup_analysis(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+# ── CUPED (variance reduction) ────────────────────────────────────────────────
+
+def cuped_adjustment(df: pd.DataFrame) -> dict:
+    """
+    CUPED — Controlled-experiment Using Pre-Experiment Data.
+    Formula: Y_cuped = Y - θ * (X - X̄),  θ = cov(Y_ctrl, X_ctrl) / var(X_ctrl)
+    Covariate X = hour_of_day (proxy; no true pre-experiment data in this dataset).
+    θ is estimated on the control group only to avoid treatment-arm leakage.
+    """
+    from scipy.stats import ttest_ind
+
+    df = add_time_features(df.copy())
+    ctrl = df[df["group"] == "control"]
+
+    cov_matrix = np.cov(ctrl["converted"].values, ctrl["hour"].values)
+    theta = cov_matrix[0, 1] / cov_matrix[1, 1]
+
+    x_bar = df["hour"].mean()
+    df["converted_cuped"] = df["converted"] - theta * (df["hour"] - x_bar)
+
+    ctrl_orig  = df[df["group"] == "control"]["converted"]
+    treat_orig = df[df["group"] == "treatment"]["converted"]
+    ctrl_adj   = df[df["group"] == "control"]["converted_cuped"]
+    treat_adj  = df[df["group"] == "treatment"]["converted_cuped"]
+
+    var_orig = float(ctrl_orig.var())
+    var_adj  = float(ctrl_adj.var())
+    var_reduction_pct = (1 - var_adj / var_orig) * 100 if var_orig > 0 else 0.0
+
+    se_orig = float(np.sqrt(var_orig / len(ctrl_orig) + treat_orig.var() / len(treat_orig)))
+    se_adj  = float(np.sqrt(var_adj  / len(ctrl_adj)  + treat_adj.var()  / len(treat_adj)))
+
+    stat, p = ttest_ind(treat_adj.values, ctrl_adj.values)
+
+    return {
+        "theta":              round(theta, 8),
+        "x_bar":              round(float(x_bar), 4),
+        "var_orig":           round(var_orig, 8),
+        "var_adj":            round(var_adj, 8),
+        "var_reduction_pct":  round(var_reduction_pct, 3),
+        "se_orig":            round(se_orig, 8),
+        "se_adj":             round(se_adj, 8),
+        "se_reduction_pct":   round((1 - se_adj / se_orig) * 100 if se_orig > 0 else 0.0, 3),
+        "mean_ctrl_orig":     round(float(ctrl_orig.mean()), 6),
+        "mean_treat_orig":    round(float(treat_orig.mean()), 6),
+        "mean_ctrl_adj":      round(float(ctrl_adj.mean()), 6),
+        "mean_treat_adj":     round(float(treat_adj.mean()), 6),
+        "lift_orig":          round(float(treat_orig.mean() - ctrl_orig.mean()), 6),
+        "lift_adj":           round(float(treat_adj.mean() - ctrl_adj.mean()), 6),
+        "t_stat":             round(float(stat), 4),
+        "p_value":            round(float(p), 4),
+        "significant":        bool(p < 0.05),
+        "n_control":          len(ctrl_orig),
+        "n_treatment":        len(treat_orig),
+    }
+
+
 def heterogeneity_test(df: pd.DataFrame) -> dict:
     """
     Logistic regression interaction test: does the treatment effect differ
