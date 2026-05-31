@@ -11,6 +11,12 @@ A full causal inference analysis of a website redesign A/B test — covering cla
 
 ---
 
+## Quick Results
+
+The website redesign did not improve conversion: after cleaning 290,585 sessions, treatment converted slightly worse than control, and the effect was not statistically or practically convincing. For portfolio context, this project demonstrates a full decision-quality experimentation workflow - frequentist tests, Bayesian inference, propensity score matching, subgroup checks, and CUPED - and shows how to recommend "do not ship" when the evidence does not support launch.
+
+---
+
 ## Key Results
 
 | Metric | Value |
