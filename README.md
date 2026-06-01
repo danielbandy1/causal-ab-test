@@ -50,6 +50,18 @@ The website redesign did not improve conversion: after cleaning 290,585 sessions
 
 ---
 
+## Statistical Power
+
+The observed treatment effect is -0.070 percentage points, so retrospective power is mainly a diagnostic for how small the observed difference was rather than evidence to ship. With the cleaned sample (`n_control=145,680`, `n_treatment=144,970`), the observed-effect power calculation is:
+
+| Quantity | Value |
+|---|---:|
+| Observed Cohen h | -0.0025 |
+| Actual power for observed effect | 10.2% |
+| Required n/group for observed effect at 80% power | 2,573,321 |
+
+For planning, a more useful minimum detectable effect is a 0.5 percentage-point absolute lift from the current 11.95% control conversion rate. Detecting that lift at 80% power and alpha=0.05 would require approximately **67,253 users per group**.
+
 ## Dashboard
 
 The interactive Streamlit dashboard lets you adjust Bayesian priors and PSM caliper and see every result update live.
