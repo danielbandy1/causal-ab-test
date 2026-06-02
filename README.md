@@ -1,11 +1,15 @@
 # Causal A/B Test Analysis
 
 [![Tests](https://img.shields.io/badge/tests-51%20passed-brightgreen)](#testing)
+[![Result](https://img.shields.io/badge/verdict-do%20not%20ship-red)](#quick-results)
+[![Experiment](https://img.shields.io/badge/users-298k-blue)](#key-results)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
 [![Streamlit](https://img.shields.io/badge/dashboard-Streamlit-ff4b4b)](https://streamlit.io)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey)](#license)
 
-A full causal inference analysis of a website redesign A/B test — covering classical hypothesis testing, Bayesian inference, propensity score matching, subgroup heterogeneity detection, and CUPED variance reduction. Wrapped in an interactive Streamlit dashboard.
+Decision-quality causal inference workflow for a 298k-user website redesign experiment: frequentist testing, Bayesian expected loss, propensity score matching, subgroup heterogeneity checks, CUPED variance reduction, and a Streamlit dashboard.
+
+**Result callout:** Treatment conversion was lower than control by **0.16 percentage points** with `p = 0.1899`; the correct product recommendation is **do not ship**.
 
 **Dataset:** [Udacity A/B Test Results](https://www.kaggle.com/datasets/zhangluyuan/ab-testing) — 294,478 user sessions, binary conversion outcome.
 
